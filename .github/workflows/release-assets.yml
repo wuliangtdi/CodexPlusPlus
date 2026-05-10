@@ -85,11 +85,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CodexPlusPlus-macos
-          path: dist/CodexPlusPlus-macos.zip
+          path: |
+            dist/CodexPlusPlus-macos.zip
+            dist/CodexPlusPlus-macos.dmg
 
-      - name: Upload CodexPlusPlus-macos.zip to release
+      - name: Upload macOS assets to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: dist/CodexPlusPlus-macos.zip
+          files: |
+            dist/CodexPlusPlus-macos.zip
+            dist/CodexPlusPlus-macos.dmg

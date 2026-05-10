@@ -9,7 +9,7 @@ source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -e . pyinstaller
 
-rm -rf build/macos build/macos-icon dist/macos
+rm -rf build/macos build/macos-dmg build/macos-icon dist/macos
 
 iconset="build/macos-icon/CodexPlusPlus.iconset"
 icns="build/macos-icon/CodexPlusPlus.icns"
@@ -43,5 +43,17 @@ python -m PyInstaller \
 codesign --force --deep --sign - dist/macos/CodexPlusPlus.app
 ditto -c -k --keepParent dist/macos/CodexPlusPlus.app dist/CodexPlusPlus-macos.zip
 
+dmg_root="build/macos-dmg/root"
+mkdir -p "$dmg_root"
+cp -R dist/macos/CodexPlusPlus.app "$dmg_root/"
+ln -s /Applications "$dmg_root/Applications"
+hdiutil create \
+  -volname "CodexPlusPlus" \
+  -srcfolder "$dmg_root" \
+  -ov \
+  -format UDZO \
+  dist/CodexPlusPlus-macos.dmg
+
 echo "Built dist/macos/CodexPlusPlus.app"
 echo "Packed dist/CodexPlusPlus-macos.zip"
+echo "Packed dist/CodexPlusPlus-macos.dmg"
