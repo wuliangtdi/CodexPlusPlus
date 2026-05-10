@@ -1,0 +1,176 @@
+name: Daily upstream build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+      upstream_short: ${{ steps.sync.outputs.upstream_short }}
+
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch branches
+        run: |
+          git remote add upstream https://github.com/BigPizzaV3/CodexPlusPlus.git
+          git fetch upstream main
+          git fetch origin main build/win-mac
+
+      - name: Sync fork branches
+        id: sync
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse origin/main)"
+          upstream="$(git rev-parse upstream/main)"
+          echo "upstream_short=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
+
+          if [ "$before" = "$upstream" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Fork main already matches upstream main."
+            exit 0
+          fi
+
+          git checkout main
+          git merge --ff-only upstream/main
+          git push origin main
+
+          git checkout -B build/win-mac origin/build/win-mac
+          git merge --no-edit main
+          git push origin build/win-mac
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create daily tag
+        id: tag
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          tag_name="auto-build-$(date -u +'%Y%m%d-%H%M%S')"
+          git tag "$tag_name"
+          git push origin "$tag_name"
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    needs: sync-upstream
+    if: needs.sync-upstream.outputs.changed == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+        with:
+          ref: build/win-mac
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Windows app
+        shell: pwsh
+        run: .\scripts\build_windows.ps1
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexPlusPlus-windows
+          path: dist/CodexPlusPlus-windows.zip
+
+  build-macos:
+    needs: sync-upstream
+    if: needs.sync-upstream.outputs.changed == 'true'
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+        with:
+          ref: build/win-mac
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build macOS app
+        run: bash scripts/build_macos.sh
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexPlusPlus-macos
+          path: |
+            dist/CodexPlusPlus-macos.zip
+            dist/CodexPlusPlus-macos.dmg
+
+  publish-release:
+    needs:
+      - sync-upstream
+      - build-windows
+      - build-macos
+    if: needs.sync-upstream.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.sync-upstream.outputs.tag_name }}
+          name: ${{ needs.sync-upstream.outputs.tag_name }}
+          body: |
+            Automated build from upstream main ${{ needs.sync-upstream.outputs.upstream_short }}.
+          files: |
+            release-assets/CodexPlusPlus-windows/CodexPlusPlus-windows.zip
+            release-assets/CodexPlusPlus-macos/CodexPlusPlus-macos.zip
+            release-assets/CodexPlusPlus-macos/CodexPlusPlus-macos.dmg
+
+  notify-success:
+    needs:
+      - sync-upstream
+      - publish-release
+    if: needs.sync-upstream.outputs.changed == 'true' && needs.publish-release.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send success email
+        uses: dawidd6/action-send-mail@v6
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: CodexPlusPlus daily build succeeded
+          to: ozonect@qq.com
+          from: ${{ secrets.SMTP_FROM }}
+          body: |
+            Upstream changed and the Windows/macOS build succeeded.
+
+            Release:
+            https://github.com/wuliangtdi/CodexPlusPlus/releases/tag/${{ needs.sync-upstream.outputs.tag_name }}
+
+            Upstream main:
+            ${{ needs.sync-upstream.outputs.upstream_short }}
