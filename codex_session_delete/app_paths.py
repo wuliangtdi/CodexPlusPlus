@@ -29,13 +29,14 @@ def find_latest_codex_app_dir(root: Path | None = None) -> Path | None:
     cmd = 'Get-AppxPackage -Name "OpenAI.Codex" | Select-Object -ExpandProperty InstallLocation'
     try:
         r = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd],
+            ["powershell.exe", "-NoProfile", "-Command", cmd],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=8,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if r.returncode != 0 or not (p := r.stdout.strip()):
             return None

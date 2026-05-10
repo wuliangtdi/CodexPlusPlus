@@ -92,7 +92,11 @@ if (Test-Path $UninstallKey) {{ Remove-Item $UninstallKey -Force }}
 
 
 def _run_powershell(script: str) -> None:
-    subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], check=True)
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        check=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def install_windows_shortcuts(options: "InstallOptions") -> None:

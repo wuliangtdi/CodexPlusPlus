@@ -129,7 +129,14 @@ def stop_existing_windows_launchers() -> None:
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
     )
     env = {**os.environ, "CODEX_PLUS_PLUS_PID": str(current_pid)}
-    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", script],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def run_launch(args: argparse.Namespace) -> int:
@@ -247,6 +254,7 @@ Write-Output ("watch-install: Startup shortcut = " + $ShortcutPath)
         text=True,
         encoding="utf-8",
         errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if result.stdout:
         print(result.stdout.strip())
@@ -279,6 +287,7 @@ Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" 
     subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 

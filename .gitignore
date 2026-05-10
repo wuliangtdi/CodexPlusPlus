@@ -7,7 +7,10 @@ __pycache__/
 venv/
 *.egg-info/
 build/
+build-*/
 dist/
+dist-*/
+*.spec
 
 .codex_asar_extract/
 .codex_asar_extract_latest/

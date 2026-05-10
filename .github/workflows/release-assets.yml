@@ -1,32 +1,95 @@
-  name: Release assets
+name: Build assets
 
-  on:
-    release:
-      types: [published]
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - build/**
+  release:
+    types: [published]
 
-  permissions:
-    contents: write
+permissions:
+  contents: write
 
-  jobs:
-    upload-source-asset:
-      runs-on: ubuntu-latest
+jobs:
+  upload-source-asset:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
 
-      steps:
-        - name: Checkout release tag
-          uses: actions/checkout@v4
-          with:
-            ref: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
-        - name: Create source package
-          run: |
-            git archive \
-              --format=zip \
-              --output=CodexPlusPlus.zip \
-              --prefix=CodexPlusPlus/ \
-              HEAD
+      - name: Create source package
+        run: |
+          git archive \
+            --format=zip \
+            --output=CodexPlusPlus.zip \
+            --prefix=CodexPlusPlus/ \
+            HEAD
 
-        - name: Upload CodexPlusPlus.zip to release
-          uses: softprops/action-gh-release@v2
-          with:
-            tag_name: ${{ github.event.release.tag_name }}
-            files: CodexPlusPlus.zip
+      - name: Upload CodexPlusPlus.zip to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: CodexPlusPlus.zip
+
+  build-windows-app:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Windows app
+        shell: pwsh
+        run: .\scripts\build_windows.ps1
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexPlusPlus-windows
+          path: dist/CodexPlusPlus-windows.zip
+
+      - name: Upload CodexPlusPlus-windows.zip to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/CodexPlusPlus-windows.zip
+
+  upload-macos-app:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build macOS app
+        run: bash scripts/build_macos.sh
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexPlusPlus-macos
+          path: dist/CodexPlusPlus-macos.zip
+
+      - name: Upload CodexPlusPlus-macos.zip to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/CodexPlusPlus-macos.zip
