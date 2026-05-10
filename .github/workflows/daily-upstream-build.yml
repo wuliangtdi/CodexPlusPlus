@@ -174,3 +174,38 @@ jobs:
 
             Upstream main:
             ${{ needs.sync-upstream.outputs.upstream_short }}
+
+  notify-failure:
+    needs:
+      - sync-upstream
+      - build-windows
+      - build-macos
+      - publish-release
+    if: always() && (needs.sync-upstream.result == 'failure' || needs.build-windows.result == 'failure' || needs.build-macos.result == 'failure' || needs.publish-release.result == 'failure')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send failure email
+        uses: dawidd6/action-send-mail@v6
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: CodexPlusPlus daily build failed
+          to: ozonect@qq.com
+          from: ${{ secrets.SMTP_FROM }}
+          body: |
+            The daily upstream sync/build failed.
+
+            Workflow run:
+            https://github.com/wuliangtdi/CodexPlusPlus/actions/runs/${{ github.run_id }}
+
+            Job results:
+            sync-upstream: ${{ needs.sync-upstream.result }}
+            build-windows: ${{ needs.build-windows.result }}
+            build-macos: ${{ needs.build-macos.result }}
+            publish-release: ${{ needs.publish-release.result }}
+
+            Common cause:
+            If sync-upstream failed after an upstream change, build/win-mac may have merge conflicts and needs manual resolution.
