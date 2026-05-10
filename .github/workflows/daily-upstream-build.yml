@@ -165,7 +165,7 @@ jobs:
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: CodexPlusPlus daily build succeeded
           to: ozonect@qq.com
-          from: ${{ secrets.SMTP_FROM }}
+          from: ${{ secrets.SMTP_USERNAME }}
           body: |
             Upstream changed and the Windows/macOS build succeeded.
 
@@ -194,7 +194,7 @@ jobs:
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: CodexPlusPlus daily build failed
           to: ozonect@qq.com
-          from: ${{ secrets.SMTP_FROM }}
+          from: ${{ secrets.SMTP_USERNAME }}
           body: |
             The daily upstream sync/build failed.
 
