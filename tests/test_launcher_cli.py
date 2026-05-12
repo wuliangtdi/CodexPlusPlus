@@ -50,6 +50,30 @@ def test_launch_codex_windows_allows_devtools_websocket_origin(monkeypatch):
     assert "--remote-allow-origins=http://127.0.0.1:9229" in popen_calls[0]
 
 
+def test_launch_codex_injects_detected_local_proxy(monkeypatch):
+    app_dir = Path("C:/Codex/app")
+    popen_calls = []
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.setattr(launcher, "local_proxy_url", lambda: "http://127.0.0.1:7897")
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda args, **kw: popen_calls.append((args, kw)))
+
+    launch_codex_app(app_dir, 9229)
+
+    assert popen_calls[0][1]["env"]["HTTP_PROXY"] == "http://127.0.0.1:7897"
+    assert popen_calls[0][1]["env"]["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+
+
+def test_launch_codex_keeps_explicit_proxy(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9999")
+    monkeypatch.setattr(launcher, "local_proxy_url", lambda: (_ for _ in ()).throw(AssertionError("should not auto-detect")))
+
+    env = launcher.codex_process_environment()
+
+    assert env["HTTPS_PROXY"] == "http://127.0.0.1:9999"
+
+
 def test_launch_codex_macos_uses_open_command(monkeypatch, tmp_path):
     app = tmp_path / "Codex.app"
     (app / "Contents" / "MacOS").mkdir(parents=True)
@@ -171,9 +195,10 @@ def test_launch_retries_injection_until_codex_page_is_ready(monkeypatch, tmp_pat
         attempts.append(args)
         if len(attempts) == 1:
             raise RuntimeError("CDP page not ready")
-        return {"result": {}}
+        return launcher.cdp.InjectionResult(websocket_url="ws://page", bridge_socket=None, result={"result": {}})
 
     monkeypatch.setattr(launcher, "inject_file", inject_after_retry)
+    monkeypatch.setattr(launcher, "evaluate_user_scripts", lambda websocket_url, script: None)
     monkeypatch.setattr(launcher.time, "sleep", lambda seconds: None)
 
     server, proc = launcher.launch_and_inject(None, None, tmp_path / "backups", 9229, 57321)
@@ -422,3 +447,12 @@ def test_wait_for_shutdown_waits_for_popen_like_process():
     assert proc.waited is True
     assert server.shutdown_called is True
     assert server.server_close_called is True
+
+
+def test_is_macos_codex_running_uses_ps_comm(monkeypatch):
+    class Result:
+        stdout = "123 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9229\n456 /usr/bin/other\n"
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Result())
+
+    assert cli.is_macos_codex_running() is True
