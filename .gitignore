@@ -11,6 +11,7 @@ build-*/
 dist/
 dist-*/
 *.spec
+CodexPlusPlus.exe
 
 .codex_asar_extract/
 .codex_asar_extract_latest/

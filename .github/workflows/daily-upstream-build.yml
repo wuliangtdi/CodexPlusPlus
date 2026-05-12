@@ -17,10 +17,10 @@ jobs:
       upstream_short: ${{ steps.sync.outputs.upstream_short }}
 
     steps:
-      - name: Checkout fork main
+      - name: Checkout build branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: build/win-mac
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -33,28 +33,23 @@ jobs:
         run: |
           git remote add upstream https://github.com/BigPizzaV3/CodexPlusPlus.git
           git fetch upstream main
-          git fetch origin main build/win-mac
+          git fetch origin build/win-mac
 
-      - name: Sync fork branches
+      - name: Sync build branch
         id: sync
         run: |
           set -euo pipefail
-          before="$(git rev-parse origin/main)"
           upstream="$(git rev-parse upstream/main)"
           echo "upstream_short=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
 
-          if [ "$before" = "$upstream" ]; then
+          git checkout -B build/win-mac origin/build/win-mac
+          if git merge-base --is-ancestor "$upstream" HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Fork main already matches upstream main."
+            echo "build/win-mac already contains upstream main."
             exit 0
           fi
 
-          git checkout main
-          git merge --ff-only upstream/main
-          git push origin main
-
-          git checkout -B build/win-mac origin/build/win-mac
-          git merge --no-edit main
+          git merge --no-edit upstream/main
           git push origin build/win-mac
 
           echo "changed=true" >> "$GITHUB_OUTPUT"
