@@ -56,6 +56,9 @@ def test_launch_codex_injects_detected_local_proxy(monkeypatch):
     monkeypatch.delenv("HTTP_PROXY", raising=False)
     monkeypatch.delenv("HTTPS_PROXY", raising=False)
     monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    monkeypatch.delenv("all_proxy", raising=False)
     monkeypatch.setattr(launcher, "local_proxy_url", lambda: "http://127.0.0.1:7897")
     monkeypatch.setattr(launcher.subprocess, "Popen", lambda args, **kw: popen_calls.append((args, kw)))
 
@@ -140,25 +143,33 @@ def test_non_windows_port_selector_keeps_requested_port(monkeypatch):
 def test_cli_keeps_helper_server_alive_after_injection(monkeypatch):
     waited = []
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: waited.append(server.port))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: waited.append((server.port, debug_port)))
 
     exit_code = cli.main([])
 
     assert exit_code == 0
-    assert waited == [57321]
+    assert waited == [(57321, 9229)]
 
 
 def test_cli_launch_subcommand_keeps_helper_server_alive_after_injection(monkeypatch):
     waited = []
     calls = []
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: calls.append(args) or (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: waited.append(server.port))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: waited.append((server.port, debug_port)))
 
     exit_code = cli.main(["launch"])
 
     assert exit_code == 0
-    assert waited == [57321]
+    assert waited == [(57321, 9229)]
     assert len(calls) == 1
+
+
+def test_cli_default_db_path_uses_codex_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "profile-home"))
+
+    args = cli.build_parser().parse_args(["launch"])
+
+    assert args.db == tmp_path / "profile-home" / "state_5.sqlite"
 
 
 def test_cli_install_dispatches_to_platform_installer(monkeypatch, tmp_path):
@@ -191,13 +202,13 @@ def test_launch_retries_injection_until_codex_page_is_ready(monkeypatch, tmp_pat
     monkeypatch.setattr(launcher, "start_helper", lambda *args, **kwargs: FakeServer())
     monkeypatch.setattr(launcher, "launch_codex_app", lambda *args: None)
 
-    def inject_after_retry(*args):
+    def inject_after_retry(*args, **kwargs):
         attempts.append(args)
         if len(attempts) == 1:
             raise RuntimeError("CDP page not ready")
         return launcher.cdp.InjectionResult(websocket_url="ws://page", bridge_socket=None, result={"result": {}})
 
-    monkeypatch.setattr(launcher, "inject_file", inject_after_retry)
+    monkeypatch.setattr(launcher, "inject_file_into_all_pages", inject_after_retry)
     monkeypatch.setattr(launcher, "evaluate_user_scripts", lambda websocket_url, script: None)
     monkeypatch.setattr(launcher.time, "sleep", lambda seconds: None)
 
@@ -205,6 +216,121 @@ def test_launch_retries_injection_until_codex_page_is_ready(monkeypatch, tmp_pat
 
     assert server.port == 57321
     assert len(attempts) == 2
+
+
+def test_launch_and_inject_attaches_existing_healthy_helper(monkeypatch, tmp_path):
+    started = []
+    injected = []
+    monkeypatch.setattr(launcher, "resolve_codex_app_dir", lambda app_dir=None: tmp_path)
+    monkeypatch.setattr(launcher, "helper_health_ok", lambda port, host="127.0.0.1": port == 57321)
+    monkeypatch.setattr(launcher, "_log_runtime_event", lambda message: None)
+    monkeypatch.setattr(launcher, "start_helper", lambda *args, **kwargs: started.append((args, kwargs)) or FakeServer())
+    monkeypatch.setattr(launcher, "launch_codex_app", lambda *args: None)
+    monkeypatch.setattr(launcher, "inject_with_retry", lambda *args, **kwargs: injected.append(args) or {"result": {}})
+
+    server, proc = launcher.launch_and_inject(None, None, tmp_path / "backups", 9229, 57321)
+
+    assert isinstance(server, launcher.AttachedHelperServer)
+    assert server.port == 57321
+    assert proc is None
+    assert started == []
+    assert injected[0][2] == 57321
+
+
+def test_helper_health_ok_checks_helper_endpoint(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    class Session:
+        trust_env = True
+
+        def get(self, url, timeout):
+            assert url == "http://127.0.0.1:57321/health"
+            assert timeout == 1
+            assert self.trust_env is False
+            return Response()
+
+    monkeypatch.setattr(launcher.requests, "Session", lambda: Session())
+
+    assert launcher.helper_health_ok(57321) is True
+
+
+def test_check_and_reinject_bridge_reinjects_when_bridge_missing(monkeypatch, tmp_path):
+    events = []
+    runtime = launcher.CodexPlusRuntime("ws://page", type("Scripts", (), {"build_enabled_bundle": lambda self: ""})(), 9229)
+    monkeypatch.setattr(launcher, "evaluate_script", lambda websocket_url, script: {"result": {"result": {"value": False}}})
+    monkeypatch.setattr(launcher, "inject_with_retry", lambda *args, **kwargs: events.append(("inject", args, kwargs)))
+    monkeypatch.setattr(launcher, "_log_runtime_event", lambda message: events.append(("log", message)))
+
+    assert launcher.check_and_reinject_bridge(9229, tmp_path / "renderer.js", 57321, object(), object(), runtime) is True
+
+    assert any(event[0] == "inject" for event in events)
+    assert any(event[0] == "log" and "renderer bridge missing" in event[1] for event in events)
+
+
+def test_inject_with_retry_tracks_all_injected_page_targets(monkeypatch, tmp_path):
+    evaluations = []
+    runtime = launcher.CodexPlusRuntime(
+        None,
+        type("Scripts", (), {"build_enabled_bundle": lambda self: "window.__userScript = true;"})(),
+        9229,
+    )
+    injections = {
+        "main": launcher.cdp.InjectionResult(websocket_url="ws://main", bridge_socket=None, result={"result": "main"}),
+        "child": launcher.cdp.InjectionResult(websocket_url="ws://child", bridge_socket=None, result={"result": "child"}),
+    }
+
+    def inject_pages(*args, **kwargs):
+        for injection in injections.values():
+            kwargs["on_injection"](injection)
+        return launcher.cdp.MultiPageInjection(injections=injections)
+
+    monkeypatch.setattr(launcher, "inject_file_into_all_pages", inject_pages)
+    monkeypatch.setattr(launcher, "evaluate_user_scripts", lambda websocket_url, script: evaluations.append((websocket_url, script)))
+
+    result = launcher.inject_with_retry(9229, tmp_path / "renderer.js", 57321, object(), object(), runtime)
+
+    assert result.websocket_url == "ws://main"
+    assert runtime.websocket_urls == {"ws://main", "ws://child"}
+    assert evaluations == [
+        ("ws://main", "window.__userScript = true;"),
+        ("ws://child", "window.__userScript = true;"),
+    ]
+
+
+def test_reload_user_scripts_drops_closed_page_targets(monkeypatch):
+    evaluations = []
+    runtime = launcher.CodexPlusRuntime(
+        "ws://closed",
+        type(
+            "Scripts",
+            (),
+            {
+                "build_enabled_bundle": lambda self: "window.__userScript = true;",
+                "inventory": lambda self: {"global_enabled": True},
+            },
+        )(),
+        9229,
+    )
+    runtime.websocket_urls.update({"ws://closed", "ws://open"})
+
+    def evaluate(websocket_url, script):
+        evaluations.append((websocket_url, script))
+        if websocket_url == "ws://closed":
+            raise RuntimeError("target closed")
+
+    monkeypatch.setattr(launcher, "evaluate_user_scripts", evaluate)
+
+    result = runtime.reload_user_scripts()
+
+    assert result["target_count"] == 1
+    assert runtime.websocket_urls == {"ws://open"}
+    assert runtime.websocket_url == "ws://open"
+    assert ("ws://open", "window.__userScript = true;") in evaluations
 
 
 def test_launch_and_inject_returns_windows_packaged_process_id(monkeypatch, tmp_path):
@@ -217,6 +343,14 @@ def test_launch_and_inject_returns_windows_packaged_process_id(monkeypatch, tmp_
 
     assert server.port == 57321
     assert proc == 1234
+
+
+def test_shutdown_helper_leaves_attached_helper_running():
+    server = launcher.AttachedHelperServer(57321)
+
+    launcher.shutdown_helper(server)
+
+    assert server.port == 57321
 
 
 def test_launch_and_inject_runs_provider_sync_before_launch_when_enabled(monkeypatch, tmp_path):
@@ -310,7 +444,7 @@ def test_cli_launch_runs_launcher_cleanup_before_injection(monkeypatch):
     events = []
     monkeypatch.setattr(cli, "stop_existing_windows_launchers", lambda: events.append("cleanup"))
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: events.append("launch") or (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: events.append("wait"))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: events.append("wait"))
 
     exit_code = cli.main(["launch"])
 
@@ -323,7 +457,7 @@ def test_cli_launch_checks_update_before_injection(monkeypatch):
     monkeypatch.setattr(cli, "stop_existing_windows_launchers", lambda: events.append("cleanup"))
     monkeypatch.setattr(cli, "maybe_print_update_notice", lambda: events.append("check-update"))
     monkeypatch.setattr(cli, "launch_and_inject", lambda *args: events.append("launch") or (FakeServer(), None))
-    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc: events.append("wait"))
+    monkeypatch.setattr(cli, "wait_for_shutdown", lambda server, proc, debug_port=9229: events.append("wait"))
 
     exit_code = cli.main(["launch"])
 
@@ -477,10 +611,14 @@ def test_wait_for_shutdown_waits_for_popen_like_process():
     assert server.server_close_called is True
 
 
-def test_is_macos_codex_running_uses_ps_comm(monkeypatch):
-    class Result:
-        stdout = "123 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9229\n456 /usr/bin/other\n"
-
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: Result())
+def test_is_macos_codex_running_falls_back_to_ps(monkeypatch):
+    monkeypatch.setattr(cli, "is_codex_cdp_page_available", lambda debug_port=9229: False)
+    monkeypatch.setattr(cli, "is_macos_codex_process_running", lambda: True)
 
     assert cli.is_macos_codex_running() is True
+
+
+def test_is_codex_cdp_page_available_returns_true_for_codex_page(monkeypatch):
+    monkeypatch.setattr(cli, "list_targets", lambda debug_port: [{"type": "page", "title": "Codex", "webSocketDebuggerUrl": "ws://page"}])
+
+    assert cli.is_codex_cdp_page_available() is True
